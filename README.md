@@ -4,8 +4,8 @@
 
 Local web app that:
 
-- asks OpenAI for a fresh set of 4 two-answer questions on startup
 - is designed for a joystick controller with two buttons, while also supporting keyboard fallback controls
+- asks OpenAI for a fresh set of 4 two-answer questions on startup
 - asks OpenAI for a brand-new arcade game based on those answers
 - loads the returned single-file game directly in the browser
 - can also run as a static GitHub Pages site for replaying saved games from the library
