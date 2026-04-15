@@ -12,6 +12,7 @@ const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
 const LIBRARY_DIR = path.join(DATA_DIR, 'library');
+const LIBRARY_INDEX_PATH = path.join(LIBRARY_DIR, 'index.json');
 const PORT = Number.parseInt(process.env.PORT || '3000', 10);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
@@ -472,6 +473,7 @@ window.arcadeInput = {
   down: false,
   left: false,
   right: false,
+  escape: false,
   upPressed: false,
   downPressed: false,
   leftPressed: false,
@@ -480,6 +482,7 @@ window.arcadeInput = {
   button2: false,
   button1Pressed: false,
   button2Pressed: false,
+  escapePressed: false,
   start: false,
   confirm: false,
   action: false,
@@ -638,7 +641,8 @@ const trackedFrameKeyCodes = new Set([
   'KeyD',
   'Enter',
   'ShiftLeft',
-  'ShiftRight'
+  'ShiftRight',
+  'Escape'
 ]);
 const trackedFrameMouseButtons = new Set([0, 2]);
 const frameKeys = new Set();
@@ -651,7 +655,8 @@ function readCapturedFrameInput() {
     left: frameKeys.has('ArrowLeft') || frameKeys.has('KeyA'),
     right: frameKeys.has('ArrowRight') || frameKeys.has('KeyD'),
     button1: frameMouseButtons.has(0) || frameKeys.has('Enter'),
-    button2: frameMouseButtons.has(2) || frameKeys.has('ShiftLeft') || frameKeys.has('ShiftRight')
+    button2: frameMouseButtons.has(2) || frameKeys.has('ShiftLeft') || frameKeys.has('ShiftRight'),
+    escape: frameKeys.has('Escape')
   };
 }
 
@@ -1083,6 +1088,7 @@ async function saveLibraryGame(game) {
   };
 
   await writeFile(getLibraryFilePath(safeId), JSON.stringify(record, null, 2), 'utf8');
+  await writeLibraryIndex();
   return record;
 }
 
@@ -1092,7 +1098,7 @@ async function listLibraryGames() {
   const games = [];
 
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+    if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name === 'index.json') {
       continue;
     }
 
@@ -1144,7 +1150,23 @@ async function updateLibraryThumbnail(gameId, thumbnailDataUrl) {
   game.thumbnailDataUrl = thumbnailDataUrl;
   game.updatedAt = new Date().toISOString();
   await writeFile(getLibraryFilePath(gameId), JSON.stringify(game, null, 2), 'utf8');
+  await writeLibraryIndex();
   return game;
+}
+
+async function writeLibraryIndex() {
+  await ensureLibraryDir();
+  const games = await listLibraryGames();
+  const indexPayload = {
+    games: games.map(({ id, title, attractText, createdAt }) => ({
+      id,
+      title,
+      attractText,
+      createdAt,
+    })),
+  };
+
+  await writeFile(LIBRARY_INDEX_PATH, JSON.stringify(indexPayload, null, 2), 'utf8');
 }
 
 async function ensureLibraryDir() {

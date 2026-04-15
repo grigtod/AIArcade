@@ -1,4 +1,8 @@
 const app = document.querySelector('#app');
+const assetRoot = normalizeBasePath(window.AI_ARCADE_ASSET_ROOT || './');
+const staticLibraryRoot = normalizeBasePath(window.AI_ARCADE_STATIC_LIBRARY_ROOT || './data/library/');
+const CLIENT_HOST_BRIDGE_START = '<!-- AI_ARCADE_HOST_BRIDGE_START -->';
+const CLIENT_HOST_BRIDGE_END = '<!-- AI_ARCADE_HOST_BRIDGE_END -->';
 
 const loadingSets = {
   questions: [
@@ -48,6 +52,7 @@ const state = {
   homeSelection: 0,
   libraryGames: [],
   librarySelection: 0,
+  libraryPreviewRequestId: 0,
   frameInput: makeEmptyInput(),
   thumbnailCaptureTimer: null,
   thumbnailRequestedFor: '',
@@ -56,6 +61,10 @@ const state = {
     context: null,
   },
   lastSafeGameInput: makeEmptyInput(),
+  runtime: {
+    apiReachable: false,
+    generationAvailable: null,
+  },
 };
 
 let dirty = true;
@@ -71,6 +80,7 @@ const trackedDirectionCodes = new Set([
   'Enter',
   'ShiftLeft',
   'ShiftRight',
+  'Escape',
 ]);
 const trackedMouseButtons = new Set([0, 2]);
 const localBindings = {
@@ -94,6 +104,7 @@ document.addEventListener('visibilitychange', () => {
     clearLocalBindings();
   }
 });
+initializeRuntime().catch(() => {});
 requestAnimationFrame(frame);
 
 function makeEmptyInput() {
@@ -104,13 +115,61 @@ function makeEmptyInput() {
     right: false,
     button1: false,
     button2: false,
+    escape: false,
     upPressed: false,
     downPressed: false,
     leftPressed: false,
     rightPressed: false,
     button1Pressed: false,
     button2Pressed: false,
+    escapePressed: false,
   };
+}
+
+function normalizeBasePath(value) {
+  const normalized = String(value || './').trim();
+  return normalized.endsWith('/') ? normalized : `${normalized}/`;
+}
+
+function resolveAppUrl(path) {
+  return new URL(path, window.location.href).toString();
+}
+
+function assetUrl(path) {
+  return resolveAppUrl(`${assetRoot}${path}`);
+}
+
+function staticLibraryUrl(path) {
+  return resolveAppUrl(`${staticLibraryRoot}${path}`);
+}
+
+function canGenerateGames() {
+  return state.runtime.generationAvailable === true;
+}
+
+function syncHomeSelectionAvailability() {
+  if (state.runtime.generationAvailable !== false) {
+    return;
+  }
+
+  if (state.homeSelection !== 1) {
+    state.homeSelection = 1;
+    markDirty();
+  }
+}
+
+async function initializeRuntime() {
+  try {
+    const health = await fetchJson(resolveAppUrl('./api/health'));
+    state.runtime.apiReachable = true;
+    state.runtime.generationAvailable = Boolean(health?.configured);
+  } catch {
+    state.runtime.apiReachable = false;
+    state.runtime.generationAvailable = false;
+  }
+
+  syncHomeSelectionAvailability();
+  markDirty();
 }
 
 function markDirty() {
@@ -219,6 +278,7 @@ function updateInputState() {
   next.rightPressed = next.right && !previous.right;
   next.button1Pressed = next.button1 && !previous.button1;
   next.button2Pressed = next.button2 && !previous.button2;
+  next.escapePressed = next.escape && !previous.escape;
 
   const nextControllerName = gamepad ? gamepad.id || 'Arcade Controller' : '';
   const controllerChanged = state.hasController !== Boolean(gamepad) || state.controllerName !== nextControllerName;
@@ -264,6 +324,7 @@ function readLocalBindings() {
     localBindings.mouseButtons.has(2) ||
     localBindings.keys.has('ShiftLeft') ||
     localBindings.keys.has('ShiftRight');
+  next.escape = localBindings.keys.has('Escape');
   return next;
 }
 
@@ -281,6 +342,7 @@ function mergeInputStates(...sources) {
     next.right ||= Boolean(source.right);
     next.button1 ||= Boolean(source.button1);
     next.button2 ||= Boolean(source.button2);
+    next.escape ||= Boolean(source.escape);
   }
 
   return next;
@@ -396,6 +458,7 @@ function sanitizeFrameInput(source) {
   next.right = Boolean(source?.right);
   next.button1 = Boolean(source?.button1);
   next.button2 = Boolean(source?.button2);
+  next.escape = Boolean(source?.escape);
   return next;
 }
 
@@ -450,6 +513,16 @@ function updateResetCombo(now) {
 }
 
 function handlePhaseControls(now) {
+  if (state.phase !== 'home' && state.input.escapePressed) {
+    playUiConfirmSound();
+    if (state.phase === 'loading-game' || state.gameJobId) {
+      void resetExperience();
+    } else {
+      goHome();
+    }
+    return;
+  }
+
   if (state.phase === 'home') {
     handleHomeControls(now);
     return;
@@ -484,6 +557,11 @@ function handleHomeControls() {
     return;
   }
 
+  if (!canGenerateGames() && state.homeSelection === 0) {
+    setHomeSelection(1);
+    return;
+  }
+
   playUiConfirmSound();
   if (state.homeSelection === 0) {
     startSession();
@@ -495,8 +573,9 @@ function handleHomeControls() {
 
 function setHomeSelection(nextIndex) {
   const clampedIndex = Math.max(0, Math.min(1, nextIndex));
-  if (clampedIndex !== state.homeSelection) {
-    state.homeSelection = clampedIndex;
+  const resolvedIndex = state.runtime.generationAvailable === false && clampedIndex === 0 ? 1 : clampedIndex;
+  if (resolvedIndex !== state.homeSelection) {
+    state.homeSelection = resolvedIndex;
     playUiMoveSound();
     syncHomeSelectionUi();
   }
@@ -569,6 +648,7 @@ function setLibrarySelection(nextIndex) {
   if (clampedIndex !== state.librarySelection) {
     state.librarySelection = clampedIndex;
     playUiMoveSound();
+    queueSelectedLibraryPreview();
     markDirty();
   }
 }
@@ -664,6 +744,11 @@ function commitAnswer() {
 }
 
 async function startSession() {
+  if (!canGenerateGames()) {
+    syncHomeSelectionAvailability();
+    return;
+  }
+
   const token = ++state.requestToken;
   clearGameState();
   state.phase = 'loading-questions';
@@ -681,7 +766,7 @@ async function startSession() {
   markDirty();
 
   try {
-    const questionnaire = await fetchJson('/api/questions', {
+    const questionnaire = await fetchJson(resolveAppUrl('./api/questions'), {
       method: 'POST',
     });
 
@@ -719,7 +804,7 @@ async function pollGameJob(token, jobId) {
   while (token === state.requestToken) {
     await delay(1500);
 
-    const result = await fetchJson(`/api/games/${encodeURIComponent(jobId)}`);
+    const result = await fetchJson(resolveAppUrl(`./api/games/${encodeURIComponent(jobId)}`));
     if (token !== state.requestToken) {
       return;
     }
@@ -764,12 +849,12 @@ async function resetExperience() {
   state.gameRecoveryCount = 0;
   state.repairingGame = false;
   state.loadingMiniGame = createLoadingMiniGame();
-  state.homeSelection = 0;
+  state.homeSelection = canGenerateGames() ? 0 : 1;
   state.librarySelection = 0;
   markDirty();
 
   if (oldJobId) {
-    fetch(`/api/games/${encodeURIComponent(oldJobId)}/cancel`, { method: 'POST' }).catch(() => {});
+    fetch(resolveAppUrl(`./api/games/${encodeURIComponent(oldJobId)}/cancel`), { method: 'POST' }).catch(() => {});
   }
 
   state.resetHoldStartedAt = null;
@@ -786,7 +871,7 @@ async function openLibrary() {
   markDirty();
 
   try {
-    const result = await fetchJson('/api/library');
+    const result = await loadLibraryGames();
     if (token !== state.requestToken) {
       return;
     }
@@ -795,6 +880,7 @@ async function openLibrary() {
     state.librarySelection = 0;
     state.phase = 'library';
     stopLoadingRotation();
+    queueSelectedLibraryPreview();
     markDirty();
   } catch (error) {
     if (token !== state.requestToken) {
@@ -815,7 +901,7 @@ async function playSavedGame(gameId) {
   markDirty();
 
   try {
-    const savedGame = await fetchJson(`/api/library/${encodeURIComponent(gameId)}`);
+    const savedGame = await loadSavedGame(gameId);
     if (token !== state.requestToken) {
       return;
     }
@@ -827,7 +913,7 @@ async function playSavedGame(gameId) {
       libraryId: savedGame.id,
       title: savedGame.title,
       attractText: savedGame.attractText,
-      html: savedGame.html,
+      html: normalizeHostedGameHtml(savedGame.html),
       thumbnailDataUrl: savedGame.thumbnailDataUrl || '',
     };
     state.thumbnailRequestedFor = '';
@@ -852,7 +938,7 @@ function goHome() {
   state.currentQuestionIndex = 0;
   state.highlightedIndex = 0;
   state.error = '';
-  state.homeSelection = 0;
+  state.homeSelection = canGenerateGames() ? 0 : 1;
   state.resetHoldStartedAt = null;
   state.resetHoldLastSeenAt = null;
   state.resetLatched = false;
@@ -864,6 +950,7 @@ function clearGameState() {
   state.gameJobId = '';
   state.gameResult = null;
   state.mountedGameHtml = '';
+  state.libraryPreviewRequestId += 1;
   state.frameInput = makeEmptyInput();
   state.lastGameRequestPayload = null;
   state.gameRecoveryCount = 0;
@@ -1037,13 +1124,17 @@ function scheduleThumbnailCapture(libraryId) {
 }
 
 async function saveThumbnail(imageDataUrl) {
+  if (!state.runtime.apiReachable) {
+    return;
+  }
+
   const libraryId = state.gameResult?.libraryId;
   if (!libraryId || state.thumbnailSavedFor === libraryId) {
     return;
   }
 
   try {
-    await fetchJson(`/api/library/${encodeURIComponent(libraryId)}/thumbnail`, {
+    await fetchJson(resolveAppUrl(`./api/library/${encodeURIComponent(libraryId)}/thumbnail`), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1068,6 +1159,604 @@ async function saveThumbnail(imageDataUrl) {
   } catch {
     state.thumbnailRequestedFor = '';
   }
+}
+
+async function loadLibraryGames() {
+  try {
+    const result = await fetchJson(resolveAppUrl('./api/library'));
+    return {
+      games: (Array.isArray(result.games) ? result.games : []).map((game) => ({
+        ...game,
+        detailsLoaded: true,
+      })),
+    };
+  } catch {
+    const games = await fetchJson(staticLibraryUrl('index.json'));
+    return {
+      games: sortLibraryGames(Array.isArray(games) ? games : games.games).map((game) => ({
+        ...game,
+        detailsLoaded: false,
+        thumbnailDataUrl: game.thumbnailDataUrl || '',
+      })),
+    };
+  }
+}
+
+async function loadSavedGame(gameId) {
+  try {
+    return await fetchJson(resolveAppUrl(`./api/library/${encodeURIComponent(gameId)}`));
+  } catch {
+    return await fetchJson(staticLibraryUrl(`${encodeURIComponent(gameId)}.json`));
+  }
+}
+
+function sortLibraryGames(games) {
+  return [...(Array.isArray(games) ? games : [])].sort(
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  );
+}
+
+function queueSelectedLibraryPreview() {
+  void ensureSelectedLibraryPreview();
+}
+
+async function ensureSelectedLibraryPreview() {
+  if (state.phase !== 'library') {
+    return;
+  }
+
+  const selected = state.libraryGames[state.librarySelection];
+  if (!selected || selected.detailsLoaded) {
+    return;
+  }
+
+  const requestId = ++state.libraryPreviewRequestId;
+
+  try {
+    const savedGame = await loadSavedGame(selected.id);
+    if (state.phase !== 'library' || requestId !== state.libraryPreviewRequestId) {
+      return;
+    }
+
+    const gameIndex = state.libraryGames.findIndex((game) => game.id === selected.id);
+    if (gameIndex < 0) {
+      return;
+    }
+
+    state.libraryGames[gameIndex] = {
+      ...state.libraryGames[gameIndex],
+      attractText: savedGame.attractText || state.libraryGames[gameIndex].attractText,
+      thumbnailDataUrl: savedGame.thumbnailDataUrl || '',
+      detailsLoaded: true,
+    };
+    markDirty();
+  } catch {
+    if (state.phase !== 'library' || requestId !== state.libraryPreviewRequestId) {
+      return;
+    }
+
+    const gameIndex = state.libraryGames.findIndex((game) => game.id === selected.id);
+    if (gameIndex >= 0) {
+      state.libraryGames[gameIndex] = {
+        ...state.libraryGames[gameIndex],
+        detailsLoaded: true,
+      };
+      markDirty();
+    }
+  }
+}
+
+function normalizeHostedGameHtml(html) {
+  return injectClientHostBridge(stripInjectedHostBridge(html));
+}
+
+function stripInjectedHostBridge(html) {
+  if (typeof html !== 'string') {
+    return '';
+  }
+
+  let nextHtml = html;
+
+  nextHtml = nextHtml.replace(
+    /\s*<!-- AI_ARCADE_HOST_BRIDGE_START -->[\s\S]*?<!-- AI_ARCADE_HOST_BRIDGE_END -->\s*/giu,
+    '\n',
+  );
+
+  nextHtml = nextHtml.replace(
+    /\s*<meta charset=["']utf-8["']>\s*<meta name=["']viewport["'] content=["']width=device-width,\s*initial-scale=1["']>\s*<script>\s*window\.arcadeInput\s*=\s*\{[\s\S]*?window\.addEventListener\('unhandledrejection',\s*\(event\)\s*=>\s*\{[\s\S]*?postHostMessage\('arcade-game-error',\s*\{\s*message\s*\}\);\s*\}\);\s*<\/script>\s*/giu,
+    '\n',
+  );
+
+  return nextHtml.trim();
+}
+
+function injectClientHostBridge(html) {
+  const bridge = buildClientHostBridge();
+
+  if (/<head[\s>]/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (match) => `${match}\n${bridge}\n`);
+  }
+
+  if (/<html[\s>]/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, (match) => `${match}\n<head>\n${bridge}\n</head>`);
+  }
+
+  return ['<!doctype html>', '<html>', '<head>', bridge, '</head>', '<body style="margin:0;background:#02050b;">', html, '</body>', '</html>'].join('\n');
+}
+
+function buildClientHostBridge() {
+  return `
+${CLIENT_HOST_BRIDGE_START}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+window.arcadeInput = {
+  up: false,
+  down: false,
+  left: false,
+  right: false,
+  button1: false,
+  button2: false,
+  escape: false,
+  upPressed: false,
+  downPressed: false,
+  leftPressed: false,
+  rightPressed: false,
+  button1Pressed: false,
+  button2Pressed: false,
+  escapePressed: false,
+  start: false,
+  confirm: false,
+  action: false,
+  secondary: false,
+  startPressed: false,
+  confirmPressed: false,
+  actionPressed: false,
+  secondaryPressed: false
+};
+
+let previousCompatInput = {
+  up: false,
+  down: false,
+  left: false,
+  right: false,
+  button1: false,
+  button2: false
+};
+
+function dispatchCompatKey(type, key, code) {
+  try {
+    const event = new KeyboardEvent(type, {
+      key,
+      code,
+      bubbles: true,
+      cancelable: true
+    });
+    window.dispatchEvent(event);
+    document.dispatchEvent(event);
+    document.body?.dispatchEvent(event);
+  } catch {}
+}
+
+function dispatchCompatPointerPress(button = 0) {
+  try {
+    const x = Math.round(window.innerWidth / 2);
+    const y = Math.round(window.innerHeight / 2);
+    const target = document.elementFromPoint(x, y) || document.body || document.documentElement;
+    const buttonMask = button === 2 ? 2 : 1;
+    const sequence =
+      button === 2
+        ? ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'contextmenu', 'auxclick']
+        : ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+
+    sequence.forEach((type) => {
+      const isPress = type === 'pointerdown' || type === 'mousedown';
+      const eventInit = {
+        bubbles: true,
+        cancelable: true,
+        clientX: x,
+        clientY: y,
+        button,
+        buttons: isPress ? buttonMask : 0
+      };
+      const event =
+        type.startsWith('pointer') && typeof PointerEvent === 'function'
+          ? new PointerEvent(type, {
+              ...eventInit,
+              pointerType: 'mouse',
+              isPrimary: button !== 2
+            })
+          : new MouseEvent(type, eventInit);
+      target?.dispatchEvent(event);
+    });
+  } catch {}
+}
+
+function withArcadeAliases(source) {
+  const state = source || {};
+  return {
+    ...state,
+    start: Boolean(state.button1),
+    confirm: Boolean(state.button1),
+    action: Boolean(state.button1),
+    secondary: Boolean(state.button2),
+    startPressed: Boolean(state.button1Pressed),
+    confirmPressed: Boolean(state.button1Pressed),
+    actionPressed: Boolean(state.button1Pressed),
+    secondaryPressed: Boolean(state.button2Pressed)
+  };
+}
+
+function applyCompatInput(nextState) {
+  const mappings = [
+    ['up', 'ArrowUp', 'ArrowUp'],
+    ['down', 'ArrowDown', 'ArrowDown'],
+    ['left', 'ArrowLeft', 'ArrowLeft'],
+    ['right', 'ArrowRight', 'ArrowRight'],
+    ['button1', 'Enter', 'Enter'],
+    ['button2', 'Shift', 'ShiftLeft']
+  ];
+
+  for (const [field, key, code] of mappings) {
+    const wasDown = Boolean(previousCompatInput[field]);
+    const isDown = Boolean(nextState[field]);
+    if (isDown && !wasDown) {
+      dispatchCompatKey('keydown', key, code);
+    }
+    if (!isDown && wasDown) {
+      dispatchCompatKey('keyup', key, code);
+    }
+  }
+
+  if (nextState.button1Pressed) {
+    dispatchCompatKey('keydown', ' ', 'Space');
+    dispatchCompatKey('keyup', ' ', 'Space');
+    dispatchCompatPointerPress(0);
+  }
+
+  if (nextState.button2Pressed) {
+    dispatchCompatPointerPress(2);
+  }
+
+  previousCompatInput = {
+    up: Boolean(nextState.up),
+    down: Boolean(nextState.down),
+    left: Boolean(nextState.left),
+    right: Boolean(nextState.right),
+    button1: Boolean(nextState.button1),
+    button2: Boolean(nextState.button2)
+  };
+}
+
+function postHostMessage(type, extra) {
+  try {
+    window.parent.postMessage({ type, ...extra }, '*');
+  } catch {}
+}
+
+const trackedFrameKeyCodes = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'Enter',
+  'ShiftLeft',
+  'ShiftRight',
+  'Escape'
+]);
+const trackedFrameMouseButtons = new Set([0, 2]);
+const frameKeys = new Set();
+const frameMouseButtons = new Set();
+
+function readCapturedFrameInput() {
+  return {
+    up: frameKeys.has('ArrowUp') || frameKeys.has('KeyW'),
+    down: frameKeys.has('ArrowDown') || frameKeys.has('KeyS'),
+    left: frameKeys.has('ArrowLeft') || frameKeys.has('KeyA'),
+    right: frameKeys.has('ArrowRight') || frameKeys.has('KeyD'),
+    button1: frameMouseButtons.has(0) || frameKeys.has('Enter'),
+    button2: frameMouseButtons.has(2) || frameKeys.has('ShiftLeft') || frameKeys.has('ShiftRight'),
+    escape: frameKeys.has('Escape')
+  };
+}
+
+function postCapturedFrameInput() {
+  postHostMessage('arcade-frame-input', { state: readCapturedFrameInput() });
+}
+
+function shouldCaptureFrameKey(event) {
+  if (!event.isTrusted) {
+    return false;
+  }
+
+  if (event.ctrlKey || event.altKey || event.metaKey) {
+    return false;
+  }
+
+  return trackedFrameKeyCodes.has(event.code);
+}
+
+function setCapturedFrameKey(code, isDown) {
+  if (isDown) {
+    if (frameKeys.has(code)) {
+      return;
+    }
+
+    frameKeys.add(code);
+    postCapturedFrameInput();
+    return;
+  }
+
+  if (frameKeys.delete(code)) {
+    postCapturedFrameInput();
+  }
+}
+
+function setCapturedFrameMouseButton(button, isDown) {
+  if (isDown) {
+    if (frameMouseButtons.has(button)) {
+      return;
+    }
+
+    frameMouseButtons.add(button);
+    postCapturedFrameInput();
+    return;
+  }
+
+  if (frameMouseButtons.delete(button)) {
+    postCapturedFrameInput();
+  }
+}
+
+function clearCapturedFrameInput() {
+  if (!frameKeys.size && !frameMouseButtons.size) {
+    return;
+  }
+
+  frameKeys.clear();
+  frameMouseButtons.clear();
+  postCapturedFrameInput();
+}
+
+window.addEventListener('message', (event) => {
+  if (!event.data || typeof event.data !== 'object') {
+    return;
+  }
+
+  if (event.data.type === 'arcade-input') {
+    const nextState = withArcadeAliases(event.data.state);
+    applyCompatInput(nextState);
+    window.arcadeInput = nextState;
+    return;
+  }
+
+  if (event.data.type === 'arcade-capture-thumbnail') {
+    captureArcadeThumbnail();
+  }
+});
+
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!shouldCaptureFrameKey(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameKey(event.code, true);
+  },
+  true,
+);
+
+window.addEventListener(
+  'keyup',
+  (event) => {
+    if (!event.isTrusted || !trackedFrameKeyCodes.has(event.code)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameKey(event.code, false);
+  },
+  true,
+);
+
+window.addEventListener(
+  'mousedown',
+  (event) => {
+    if (!event.isTrusted || !trackedFrameMouseButtons.has(event.button)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameMouseButton(event.button, true);
+  },
+  true,
+);
+
+window.addEventListener(
+  'mouseup',
+  (event) => {
+    if (!event.isTrusted || !trackedFrameMouseButtons.has(event.button)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameMouseButton(event.button, false);
+  },
+  true,
+);
+
+window.addEventListener(
+  'click',
+  (event) => {
+    if (event.isTrusted && event.button === 0) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  },
+  true,
+);
+
+window.addEventListener(
+  'auxclick',
+  (event) => {
+    if (event.isTrusted && trackedFrameMouseButtons.has(event.button)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  },
+  true,
+);
+
+window.addEventListener(
+  'contextmenu',
+  (event) => {
+    if (event.isTrusted) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  },
+  true,
+);
+
+window.addEventListener('blur', clearCapturedFrameInput);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearCapturedFrameInput();
+  }
+});
+
+function showArcadeFailure(message) {
+  let overlay = document.getElementById('arcade-host-failure');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'arcade-host-failure';
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.zIndex = '999999';
+    overlay.style.display = 'grid';
+    overlay.style.placeItems = 'center';
+    overlay.style.padding = '24px';
+    overlay.style.background = 'rgba(2, 5, 11, 0.92)';
+    overlay.style.color = '#f2f4e8';
+    overlay.style.fontFamily = 'Trebuchet MS, Segoe UI, sans-serif';
+    overlay.style.textAlign = 'center';
+    overlay.innerHTML =
+      '<div style="max-width:36rem;border:1px solid rgba(89,255,216,0.35);border-radius:24px;padding:22px;background:rgba(6,15,27,0.92)">' +
+      '<div style="color:#59ffd8;letter-spacing:0.16em;text-transform:uppercase;font-size:12px;margin-bottom:12px">Generated Game Error</div>' +
+      '<div id="arcade-host-failure-text" style="font-size:18px;line-height:1.5;white-space:pre-wrap"></div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+  }
+
+  const text = overlay.querySelector('#arcade-host-failure-text');
+  if (text) {
+    text.textContent = message;
+  }
+}
+
+function wrapThumbnailText(context, text, maxWidth) {
+  const words = String(text || 'Arcade Game').split(/\\s+/).filter(Boolean);
+  const lines = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    const nextLine = currentLine ? currentLine + ' ' + word : word;
+    if (context.measureText(nextLine).width > maxWidth && currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+      continue;
+    }
+
+    currentLine = nextLine;
+  }
+
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  return lines.slice(0, 3);
+}
+
+function captureArcadeThumbnail() {
+  try {
+    const output = document.createElement('canvas');
+    output.width = 320;
+    output.height = 320;
+    const context = output.getContext('2d');
+    if (!context) {
+      return;
+    }
+
+    context.fillStyle = '#09111a';
+    context.fillRect(0, 0, output.width, output.height);
+
+    const sourceCanvas = document.querySelector('canvas');
+    if (sourceCanvas && sourceCanvas.width > 0 && sourceCanvas.height > 0) {
+      const sourceSize = Math.min(sourceCanvas.width, sourceCanvas.height);
+      const sx = Math.max(0, (sourceCanvas.width - sourceSize) / 2);
+      const sy = Math.max(0, (sourceCanvas.height - sourceSize) / 2);
+      context.imageSmoothingEnabled = false;
+      context.drawImage(sourceCanvas, sx, sy, sourceSize, sourceSize, 0, 0, output.width, output.height);
+    } else {
+      const title =
+        document.title ||
+        document.querySelector('h1, h2, [data-title]')?.textContent ||
+        'Arcade Game';
+
+      context.fillStyle = '#11263a';
+      context.fillRect(18, 18, 284, 284);
+      context.strokeStyle = 'rgba(126, 225, 208, 0.45)';
+      context.lineWidth = 2;
+      context.strokeRect(18, 18, 284, 284);
+      context.fillStyle = '#f2f4e8';
+      context.font = 'bold 26px Trebuchet MS, Segoe UI, sans-serif';
+      const lines = wrapThumbnailText(context, title, 220);
+      lines.forEach((line, index) => {
+        context.fillText(line, 34, 126 + index * 34);
+      });
+    }
+
+    postHostMessage('arcade-thumbnail', {
+      imageDataUrl: output.toDataURL('image/png'),
+    });
+  } catch {}
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  try {
+    document.body?.setAttribute('tabindex', '-1');
+    document.body?.focus?.();
+    window.focus?.();
+  } catch {}
+});
+
+window.addEventListener('error', (event) => {
+  const message = event?.error?.stack || event?.message || 'Unknown game error.';
+  showArcadeFailure(message);
+  postHostMessage('arcade-game-error', { message });
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event?.reason;
+  const message =
+    (reason && typeof reason === 'object' && reason.stack) ||
+    (reason && typeof reason === 'object' && reason.message) ||
+    String(reason || 'Unhandled promise rejection in generated game.');
+  showArcadeFailure(message);
+  postHostMessage('arcade-game-error', { message });
+});
+</script>
+${CLIENT_HOST_BRIDGE_END}`.trim();
 }
 
 function renderApp() {
@@ -1130,15 +1819,87 @@ function renderContent() {
   return renderError();
 }
 
+function usingKeyboardMenuFallback() {
+  return !state.hasController;
+}
+
+function menuMoveInstruction() {
+  return usingKeyboardMenuFallback() ? 'Arrow keys move' : 'Stick moves';
+}
+
+function menuBrowseInstruction(hasGames) {
+  if (!hasGames) {
+    return 'No saved games yet';
+  }
+
+  return usingKeyboardMenuFallback() ? 'Arrow keys browse list' : 'Stick browses list';
+}
+
+function menuSelectInstruction() {
+  return usingKeyboardMenuFallback() ? 'Enter selects' : 'Button 1 selects';
+}
+
+function menuPlayInstruction(hasGames) {
+  return usingKeyboardMenuFallback()
+    ? hasGames
+      ? 'Enter plays'
+      : 'Enter returns'
+    : hasGames
+      ? 'Button 1 plays'
+      : 'Button 1 returns';
+}
+
+function menuConfirmInstruction() {
+  return usingKeyboardMenuFallback() ? 'Enter confirms' : 'Button 1 confirms';
+}
+
+function menuBackInstruction() {
+  return usingKeyboardMenuFallback() ? 'Shift returns home' : 'Button 2 returns home';
+}
+
+function menuReturnHomeInstruction() {
+  return usingKeyboardMenuFallback() ? 'Press Enter or Shift to return home.' : 'Press Button 1 or Button 2 to return home.';
+}
+
+function menuSelectionHint(slot, active) {
+  if (active) {
+    return usingKeyboardMenuFallback() ? 'Press Enter to confirm' : 'Press Button 1 to confirm';
+  }
+
+  if (!usingKeyboardMenuFallback()) {
+    return `Move stick ${slot.toLowerCase()} to select`;
+  }
+
+  return `Press ${slot === 'Left' ? 'Left' : 'Right'} arrow to select`;
+}
+
+function menuFlowInstruction(isLibrary) {
+  if (usingKeyboardMenuFallback()) {
+    return isLibrary
+      ? 'When the list is ready, you can pick any saved game with the arrow keys and Enter.'
+      : 'Once the questions arrive, the arrow keys and Enter handle the full 4-question run.';
+  }
+
+  return isLibrary
+    ? 'When the list is ready, you can pick any saved game with the stick and Button 1.'
+    : 'Once the questions arrive, the stick and Button 1 handle the full 4-question run.';
+}
+
+function resetInstructionText() {
+  return usingKeyboardMenuFallback()
+    ? 'Hold Up Arrow + Enter + Shift for 4 seconds to return to the home menu.'
+    : 'Hold UP + Button 1 + Button 2 for 4 seconds to return to the home menu.';
+}
+
 function renderFooter() {
   if (state.phase === 'library') {
     const hasGames = state.libraryGames.length > 0;
     return `
       <footer class="bottom-bar">
         <div class="status-row">
-          <div class="status-pill">${hasGames ? 'Stick browses list' : 'No saved games yet'}</div>
-          <div class="status-pill">${hasGames ? 'Button 1 plays' : 'Button 1 returns'}</div>
-          <div class="status-pill">Button 2 returns home</div>
+          <div class="status-pill">${menuBrowseInstruction(hasGames)}</div>
+          <div class="status-pill">${menuPlayInstruction(hasGames)}</div>
+          <div class="status-pill">${menuBackInstruction()}</div>
         </div>
         <div class="status-pill">${state.libraryGames.length} saved ${state.libraryGames.length === 1 ? 'game' : 'games'}</div>
       </footer>
@@ -1149,7 +1910,7 @@ function renderFooter() {
     return `
       <footer class="bottom-bar">
         <div class="status-row">
-          <div class="status-pill">Button 1 returns home</div>
+          <div class="status-pill">${usingKeyboardMenuFallback() ? 'Enter returns home' : 'Button 1 returns home'}</div>
         </div>
         <div class="status-pill warn">Connection or generation issue</div>
       </footer>
@@ -1160,8 +1921,8 @@ function renderFooter() {
     return `
       <footer class="bottom-bar">
         <div class="status-row">
-          <div class="status-pill">Stick picks answer</div>
-          <div class="status-pill">Button 1 confirms</div>
+          <div class="status-pill">${usingKeyboardMenuFallback() ? 'Arrow keys pick answer' : 'Stick picks answer'}</div>
+          <div class="status-pill">${menuConfirmInstruction()}</div>
           <div class="status-pill">4 questions total</div>
         </div>
         ${renderResetMeter()}
@@ -1184,9 +1945,9 @@ function renderFooter() {
   return `
     <footer class="bottom-bar">
       <div class="status-row">
-        <div class="status-pill">Stick moves</div>
-        <div class="status-pill">Button 1 selects</div>
-        <div class="status-pill">Button 2 stays free</div>
+        <div class="status-pill">${menuMoveInstruction()}</div>
+        <div class="status-pill">${menuSelectInstruction()}</div>
+        <div class="status-pill">${usingKeyboardMenuFallback() ? 'Shift stays free' : 'Button 2 stays free'}</div>
       </div>
       ${renderResetMeter()}
     </footer>
@@ -1194,14 +1955,19 @@ function renderFooter() {
 }
 
 function renderHome() {
+  const generationUnavailable = state.runtime.generationAvailable === false;
   const options = [
     {
       title: 'Generate New Game',
       detail: 'Answer 4 quick arcade questions and let the cabinet build something brand new.',
+      note: generationUnavailable ? 'Needs API key in .env to use.' : '',
+      disabled: generationUnavailable,
     },
     {
       title: 'Play Old Games',
       detail: 'Browse the saved library on this cabinet and jump straight back into a previous build.',
+      note: '',
+      disabled: false,
     },
   ];
 
@@ -1211,7 +1977,7 @@ function renderHome() {
         <div class="home-video-frame">
           <video
             class="home-video"
-            src="/media/home-preview.mp4"
+            src="${escapeHtml(assetUrl('media/home-preview.mp4'))}"
             autoplay
             muted
             loop
@@ -1225,10 +1991,11 @@ function renderHome() {
         ${options
           .map(
             (option, index) => `
-              <article class="home-option ${index === state.homeSelection ? 'active' : ''}">
+              <article class="home-option ${index === state.homeSelection ? 'active' : ''} ${option.disabled ? 'disabled' : ''}">
                 <div>
                   <h3>${escapeHtml(option.title)}</h3>
                   <p>${escapeHtml(option.detail)}</p>
+                  ${option.note ? `<p class="home-option-note">${escapeHtml(option.note)}</p>` : ''}
                 </div>
               </article>
             `,
@@ -1255,7 +2022,7 @@ function renderLibrary() {
             <span class="tiny-label">Browse</span>
             <span class="library-count">0 games</span>
           </div>
-          <p class="screen-copy">Press Button 1 or Button 2 to return home.</p>
+          <p class="screen-copy">${escapeHtml(menuReturnHomeInstruction())}</p>
         </aside>
       </div>
     `;
@@ -1318,7 +2085,7 @@ function renderQuestionnaire() {
                 <article class="answer-choice ${active ? 'active' : ''}">
                   <div class="answer-slot">${slot}</div>
                   <div class="answer-choice-text">${escapeHtml(answer.label)}</div>
-                  <div class="answer-choice-hint">${active ? 'Press Button 1 to confirm' : `Move stick ${slot.toLowerCase()} to select`}</div>
+                  <div class="answer-choice-hint">${escapeHtml(menuSelectionHint(slot, active))}</div>
                 </article>
               `;
             })
@@ -1366,11 +2133,11 @@ function renderLoader() {
       <aside class="panel info-stack">
         <section class="info-card">
           <span class="info-kicker">What Happens Next</span>
-          <p>${escapeHtml(state.phase === 'loading-library' ? 'When the list is ready, you can pick any saved game with the stick and Button 1.' : 'Once the questions arrive, the stick and Button 1 handle the full 4-question run.')}</p>
+          <p>${escapeHtml(menuFlowInstruction(state.phase === 'loading-library'))}</p>
         </section>
         <section class="info-card">
           <span class="info-kicker">Cabinet Controls</span>
-          <p>Hold UP + Button 1 + Button 2 for 4 seconds if you want to jump back to the home menu.</p>
+          <p>${escapeHtml(resetInstructionText())}</p>
         </section>
       </aside>
     </div>
@@ -1437,7 +2204,7 @@ function renderError() {
         <span class="eyebrow">Cabinet Fault</span>
         <h2 class="question-prompt">The run hit a snag.</h2>
         <p class="screen-copy error-copy">${escapeHtml(state.error)}</p>
-        <p class="screen-copy">Press Button 1 to return to the home menu.</p>
+        <p class="screen-copy">${escapeHtml(usingKeyboardMenuFallback() ? 'Press Enter to return to the home menu.' : 'Press Button 1 to return to the home menu.')}</p>
       </section>
       <aside class="panel">
         <span class="info-kicker">Most Common Cause</span>
@@ -1461,7 +2228,7 @@ function renderResetMeter() {
   return `
     <div class="reset-meter">
       <div class="reset-label">
-        <span>Hold UP + B1 + B2 to restart</span>
+        <span>${escapeHtml(usingKeyboardMenuFallback() ? 'Hold Up Arrow + Enter + Shift to restart' : 'Hold UP + B1 + B2 to restart')}</span>
         <span class="reset-value">${Math.round(progress * 100)}%</span>
       </div>
       <div class="progress-shell" aria-hidden="true">
@@ -1554,7 +2321,7 @@ async function requestGameBuild(payload, loadingSet) {
   markDirty();
 
   try {
-    const result = await fetchJson('/api/games', {
+    const result = await fetchJson(resolveAppUrl('./api/games'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1563,7 +2330,7 @@ async function requestGameBuild(payload, loadingSet) {
     });
 
     if (token !== state.requestToken) {
-      fetch(`/api/games/${encodeURIComponent(result.jobId)}/cancel`, { method: 'POST' }).catch(() => {});
+      fetch(resolveAppUrl(`./api/games/${encodeURIComponent(result.jobId)}/cancel`), { method: 'POST' }).catch(() => {});
       return;
     }
 

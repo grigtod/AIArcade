@@ -1,0 +1,76 @@
+{
+  "games": [
+    {
+      "id": "resp_0feb1a1ef48e23fa0069df79bd5b04819f93e2069dcdd9be3d",
+      "title": "SCRAP CIRCUIT: BOSS RUN",
+      "attractText": "BUTTON 1: START / PLACE BAIT NODE  •  STICK: MOVE  •  BUTTON 2: PULSE DASH\nLure scrap beasts through your gadgets, overload cores, survive 3 boss hunts.",
+      "createdAt": "2026-04-15T11:42:53.000Z"
+    },
+    {
+      "id": "resp_00dabc0301aab2550069df6baa24748195a293311fe0dc2779",
+      "title": "Patch Drift: Boss Garage",
+      "attractText": "PATCH DRIFT: BOSS GARAGE — Glide your grease mechanic around the ring, grab flying scrap, and stack matching parts into repair towers before each rogue machine crushes the shop. Stick to drift. BUTTON 1: start / wrench toss / confirm. BUTTON 2: magnetic dodge. Build all 3 towers to win the duel.",
+      "createdAt": "2026-04-15T10:42:50.000Z"
+    },
+    {
+      "id": "resp_007c7539adf776c20069df6ae327588195ab38c3d85e60c04f",
+      "title": "Gridline Getaway",
+      "attractText": "GRIDLINE GETAWAY\nButton 1: START / PHASE DASH\nButton 2: BRAKE SHIELD\nStick: switch lanes one step per press\n\nOutrun the tiny swarm through shifting lane traps.\nReach the exit gate before panic hits 100.",
+      "createdAt": "2026-04-15T10:39:31.000Z"
+    },
+    {
+      "id": "resp_0378f4e11b29026d0069df61eb1d388197ba55a18dc6b994cd",
+      "title": "NEON BONE RUSH",
+      "attractText": "NEON BONE RUSH\nButton 1: START / JUMP\nButton 2: DASH\nHold stick to lean in air\nChain near-misses and pickups to build FEVER",
+      "createdAt": "2026-04-15T10:01:15.000Z"
+    },
+    {
+      "id": "resp_0ab45f85dbf072730069df51d097dc8194bef28a8fc90b278e",
+      "title": "DRIFTHOOK CHAMBERS",
+      "attractText": "DRIFTHOOK CHAMBERS\n\nClear every room.\nWild momentum, heavy bruisers.\n\nSTICK  Move / drift\nBUTTON 1  Launch hook / start\nBUTTON 2  Brake burst\n\nHit all anchors in a room to purge it.\nBruisers wake and slam when you get close.\nClear the connected chambers.\n\nPRESS BUTTON 1",
+      "createdAt": "2026-04-15T08:52:32.000Z"
+    },
+    {
+      "id": "resp_098f82c88cb237250069de5211532c81a19778a6a2090963ff",
+      "title": "Moonstep Relic",
+      "attractText": "MOONSTEP RELIC — Hop, dodge, endure the moon ruins, then break the guardian boss. Button 1: start/jump/strike. Button 2: phase dodge.",
+      "createdAt": "2026-04-14T14:41:21.000Z"
+    },
+    {
+      "id": "resp_039bd7787cfc7d600069de508a7114819fba366419f64874bc",
+      "title": "Trash Dog: Bin Shift",
+      "attractText": "TRASH DOG: BIN SHIFT\\nButton 1: start / bite-push bins\\nButton 2: bark pulse\\nStick: move one tile at a time\\n\\nSolve each junkyard maze by shoving bins onto glowing pads while dodging swarms of rats.",
+      "createdAt": "2026-04-14T14:34:50.000Z"
+    },
+    {
+      "id": "resp_020f79a99178992b0069de4e1ac9848190a71b31a85aa723b4",
+      "title": "Rocket Cat: Grid Burn",
+      "attractText": "ROCKET CAT: GRID BURN\n\nButton 1: start / place spark\nButton 2: dash\nStick: move one tile at a time\n\nLight every safe tile before the ember swarm traps you.",
+      "createdAt": "2026-04-14T14:24:26.000Z"
+    },
+    {
+      "id": "resp_0ef8178fee80e7e80069de461f6c8c81a1ab61a3fed05e5b69",
+      "title": "ROAD DOG: BARK RUSH",
+      "attractText": "ROAD DOG: BARK RUSH — Button 1 to start. Stick to move. Button 1: bark burst. Button 2: dash. Survive the swarm, chain close calls, grab bones.",
+      "createdAt": "2026-04-14T13:50:23.000Z"
+    },
+    {
+      "id": "resp_0358fc0be603ad810069de3ea38b9c819295431e1817e59c72",
+      "title": "Rocket Cat: Prism Pounce",
+      "attractText": "ROCKET CAT: PRISM POUNCE — Aim with the stick, fire with Button 1, dash with Button 2. Match prism cores by color, clear waves, survive the scramble.",
+      "createdAt": "2026-04-14T13:18:27.000Z"
+    },
+    {
+      "id": "resp_0a713916abc558650069de3a69562c8194a2d0b688316b4006",
+      "title": "Whisker Wards",
+      "attractText": "WHISKER WARDS — A scrappy cat defends a shrinking puzzle board. Aim with the stick, fire with Button 1, dodge with Button 2. Match rune colors by shooting the right targets before the traps seal in. Button 1 to start.",
+      "createdAt": "2026-04-14T13:00:25.000Z"
+    },
+    {
+      "id": "resp_097163d9448fb40f0069de379fa5c881a1adbcd6d7e5ecd529",
+      "title": "Neon Pounce EX",
+      "attractText": "NEON POUNCE EX — Robo-cat arena shooter. Move with stick, auto-aim with your movement, Button 1 to fire/start, Button 2 to dash. Chain hits to boost score. Survive the neon swarm.",
+      "createdAt": "2026-04-14T12:48:31.000Z"
+    }
+  ]
+}
