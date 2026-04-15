@@ -1,9 +1,11 @@
+![AI Arcade Box header](./public/media/readme-header.jpg)
+
 # AI Arcade
 
 Local Raspberry Pi web app that:
 
-- asks OpenAI for a fresh set of 8 two-answer questions on startup
-- lets the player answer with only a joystick and Button 1
+- asks OpenAI for a fresh set of 4 two-answer questions on startup
+- lets the player answer with the arcade controls, with keyboard and mouse fallbacks available too
 - asks OpenAI for a brand-new arcade game based on those answers
 - loads the returned single-file game directly in the browser
 - supports a global reset combo: hold `UP + Button 1 + Button 2` for 4 seconds
@@ -11,7 +13,7 @@ Local Raspberry Pi web app that:
 ## Stack
 
 - Node.js built-in HTTP server
-- vanilla HTML, CSS, and browser Gamepad API
+- vanilla HTML, CSS, browser Gamepad API, and keyboard/mouse fallback bindings
 - OpenAI Responses API from the local server so the API key never sits in the browser
 
 ## Setup
@@ -37,8 +39,8 @@ npm start
 
 ## Raspberry Pi notes
 
-- The browser UI is designed for controller-only use.
-- The frontend reads the controller through the browser Gamepad API.
+- The browser UI is designed around the arcade controller, but arrow keys or `WASD` also map to directions and mouse buttons `1` and `2` map to Button 1 and Button 2.
+- The frontend reads the controller through the browser Gamepad API and mirrors the same digital inputs to keyboard and mouse fallback bindings.
 - By default, Button 1 is gamepad button index `0` and Button 2 is index `1`.
 - The joystick uses either the left stick axes or standard d-pad button mapping if the controller exposes buttons `12-15`.
 - Generated games receive controller state through a host-provided `window.arcadeInput` object inside the iframe.

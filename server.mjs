@@ -17,6 +17,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const QUESTION_MODEL = process.env.OPENAI_QUESTION_MODEL || 'gpt-5.4-mini';
 const GAME_MODEL = process.env.OPENAI_GAME_MODEL || 'gpt-5.4';
+const HOST_BRIDGE_START = '<!-- AI_ARCADE_HOST_BRIDGE_START -->';
+const HOST_BRIDGE_END = '<!-- AI_ARCADE_HOST_BRIDGE_END -->';
 
 const MIME_TYPES = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -414,7 +416,7 @@ async function buildGameStatusPayload(response, responseId) {
         id: responseId,
         title: parsed.title,
         attractText: parsed.attract_text,
-        html: injectHostBridge(parsed.html),
+        html: parsed.html,
         createdAt: toIsoDate(response.created_at),
       });
 
@@ -424,7 +426,7 @@ async function buildGameStatusPayload(response, responseId) {
           libraryId: savedGame.id,
           title: parsed.title,
           attractText: parsed.attract_text,
-          html: savedGame.html,
+          html: normalizeHostedGameHtml(savedGame.html),
         },
       };
     } catch (error) {
@@ -461,6 +463,7 @@ async function buildGameStatusPayload(response, responseId) {
 
 function injectHostBridge(html) {
   const bridge = `
+${HOST_BRIDGE_START}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>
@@ -510,18 +513,36 @@ function dispatchCompatKey(type, key, code) {
   } catch {}
 }
 
-function dispatchCompatPointerPress() {
+function dispatchCompatPointerPress(button = 0) {
   try {
     const x = Math.round(window.innerWidth / 2);
     const y = Math.round(window.innerHeight / 2);
     const target = document.elementFromPoint(x, y) || document.body || document.documentElement;
-    ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
-      const event = new MouseEvent(type, {
+
+    const buttonMask = button === 2 ? 2 : 1;
+    const sequence =
+      button === 2
+        ? ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'contextmenu', 'auxclick']
+        : ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+
+    sequence.forEach((type) => {
+      const isPress = type === 'pointerdown' || type === 'mousedown';
+      const eventInit = {
         bubbles: true,
         cancelable: true,
         clientX: x,
-        clientY: y
-      });
+        clientY: y,
+        button,
+        buttons: isPress ? buttonMask : 0
+      };
+      const event =
+        type.startsWith('pointer') && typeof PointerEvent === 'function'
+          ? new PointerEvent(type, {
+              ...eventInit,
+              pointerType: 'mouse',
+              isPrimary: button !== 2
+            })
+          : new MouseEvent(type, eventInit);
       target?.dispatchEvent(event);
     });
   } catch {}
@@ -566,7 +587,11 @@ function applyCompatInput(nextState) {
   if (nextState.button1Pressed) {
     dispatchCompatKey('keydown', ' ', 'Space');
     dispatchCompatKey('keyup', ' ', 'Space');
-    dispatchCompatPointerPress();
+    dispatchCompatPointerPress(0);
+  }
+
+  if (nextState.button2Pressed) {
+    dispatchCompatPointerPress(2);
   }
 
   previousCompatInput = {
@@ -601,6 +626,188 @@ function postHostMessage(type, extra) {
     window.parent.postMessage({ type, ...extra }, '*');
   } catch {}
 }
+
+const trackedFrameKeyCodes = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'Enter',
+  'ShiftLeft',
+  'ShiftRight'
+]);
+const trackedFrameMouseButtons = new Set([0, 2]);
+const frameKeys = new Set();
+const frameMouseButtons = new Set();
+
+function readCapturedFrameInput() {
+  return {
+    up: frameKeys.has('ArrowUp') || frameKeys.has('KeyW'),
+    down: frameKeys.has('ArrowDown') || frameKeys.has('KeyS'),
+    left: frameKeys.has('ArrowLeft') || frameKeys.has('KeyA'),
+    right: frameKeys.has('ArrowRight') || frameKeys.has('KeyD'),
+    button1: frameMouseButtons.has(0) || frameKeys.has('Enter'),
+    button2: frameMouseButtons.has(2) || frameKeys.has('ShiftLeft') || frameKeys.has('ShiftRight')
+  };
+}
+
+function postCapturedFrameInput() {
+  postHostMessage('arcade-frame-input', { state: readCapturedFrameInput() });
+}
+
+function shouldCaptureFrameKey(event) {
+  if (!event.isTrusted) {
+    return false;
+  }
+
+  if (event.ctrlKey || event.altKey || event.metaKey) {
+    return false;
+  }
+
+  return trackedFrameKeyCodes.has(event.code);
+}
+
+function setCapturedFrameKey(code, isDown) {
+  if (isDown) {
+    if (frameKeys.has(code)) {
+      return;
+    }
+
+    frameKeys.add(code);
+    postCapturedFrameInput();
+    return;
+  }
+
+  if (frameKeys.delete(code)) {
+    postCapturedFrameInput();
+  }
+}
+
+function setCapturedFrameMouseButton(button, isDown) {
+  if (isDown) {
+    if (frameMouseButtons.has(button)) {
+      return;
+    }
+
+    frameMouseButtons.add(button);
+    postCapturedFrameInput();
+    return;
+  }
+
+  if (frameMouseButtons.delete(button)) {
+    postCapturedFrameInput();
+  }
+}
+
+function clearCapturedFrameInput() {
+  if (!frameKeys.size && !frameMouseButtons.size) {
+    return;
+  }
+
+  frameKeys.clear();
+  frameMouseButtons.clear();
+  postCapturedFrameInput();
+}
+
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!shouldCaptureFrameKey(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameKey(event.code, true);
+  },
+  true,
+);
+
+window.addEventListener(
+  'keyup',
+  (event) => {
+    if (!event.isTrusted || !trackedFrameKeyCodes.has(event.code)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameKey(event.code, false);
+  },
+  true,
+);
+
+window.addEventListener(
+  'mousedown',
+  (event) => {
+    if (!event.isTrusted || !trackedFrameMouseButtons.has(event.button)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameMouseButton(event.button, true);
+  },
+  true,
+);
+
+window.addEventListener(
+  'mouseup',
+  (event) => {
+    if (!event.isTrusted || !trackedFrameMouseButtons.has(event.button)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setCapturedFrameMouseButton(event.button, false);
+  },
+  true,
+);
+
+window.addEventListener(
+  'click',
+  (event) => {
+    if (event.isTrusted && event.button === 0) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  },
+  true,
+);
+
+window.addEventListener(
+  'auxclick',
+  (event) => {
+    if (event.isTrusted && trackedFrameMouseButtons.has(event.button)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  },
+  true,
+);
+
+window.addEventListener(
+  'contextmenu',
+  (event) => {
+    if (event.isTrusted) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  },
+  true,
+);
+
+window.addEventListener('blur', clearCapturedFrameInput);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearCapturedFrameInput();
+  }
+});
 
 function showArcadeFailure(message) {
   let overlay = document.getElementById('arcade-host-failure');
@@ -723,7 +930,8 @@ window.addEventListener('unhandledrejection', (event) => {
   showArcadeFailure(message);
   postHostMessage('arcade-game-error', { message });
 });
-</script>`;
+</script>
+${HOST_BRIDGE_END}`;
 
   if (/<head[\s>]/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (match) => `${match}\n${bridge}\n`);
@@ -744,6 +952,30 @@ window.addEventListener('unhandledrejection', (event) => {
     '</body>',
     '</html>',
   ].join('\n');
+}
+
+function normalizeHostedGameHtml(html) {
+  return injectHostBridge(stripInjectedHostBridge(html));
+}
+
+function stripInjectedHostBridge(html) {
+  if (typeof html !== 'string') {
+    return '';
+  }
+
+  let nextHtml = html;
+
+  nextHtml = nextHtml.replace(
+    /\s*<!-- AI_ARCADE_HOST_BRIDGE_START -->[\s\S]*?<!-- AI_ARCADE_HOST_BRIDGE_END -->\s*/giu,
+    '\n',
+  );
+
+  nextHtml = nextHtml.replace(
+    /\s*<meta charset=["']utf-8["']>\s*<meta name=["']viewport["'] content=["']width=device-width,\s*initial-scale=1["']>\s*<script>\s*window\.arcadeInput\s*=\s*\{[\s\S]*?window\.addEventListener\('unhandledrejection',\s*\(event\)\s*=>\s*\{[\s\S]*?postHostMessage\('arcade-game-error',\s*\{\s*message\s*\}\);\s*\}\);\s*<\/script>\s*/giu,
+    '\n',
+  );
+
+  return nextHtml.trim();
 }
 
 function parseStructuredResponse(response) {
@@ -839,7 +1071,7 @@ function buildCompatibleModelPayload(payload) {
 async function saveLibraryGame(game) {
   await ensureLibraryDir();
   const safeId = normalizeLibraryId(game.id);
-  const existing = await readLibraryGame(safeId);
+  const existing = await readLibraryGame(safeId, { raw: true });
   const record = {
     id: safeId,
     title: game.title,
@@ -882,10 +1114,18 @@ async function listLibraryGames() {
   return games.sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
 }
 
-async function readLibraryGame(gameId) {
+async function readLibraryGame(gameId, options = {}) {
   try {
     const raw = await readFile(getLibraryFilePath(gameId), 'utf8');
-    return JSON.parse(raw);
+    const record = JSON.parse(raw);
+    if (options.raw) {
+      return record;
+    }
+
+    return {
+      ...record,
+      html: normalizeHostedGameHtml(record.html),
+    };
   } catch {
     return null;
   }
@@ -896,7 +1136,7 @@ async function updateLibraryThumbnail(gameId, thumbnailDataUrl) {
     throw new Error('Thumbnail must be a data URL image.');
   }
 
-  const game = await readLibraryGame(gameId);
+  const game = await readLibraryGame(gameId, { raw: true });
   if (!game) {
     return null;
   }

@@ -48,6 +48,7 @@ const state = {
   homeSelection: 0,
   libraryGames: [],
   librarySelection: 0,
+  frameInput: makeEmptyInput(),
   thumbnailCaptureTimer: null,
   thumbnailRequestedFor: '',
   thumbnailSavedFor: '',
@@ -58,10 +59,41 @@ const state = {
 };
 
 let dirty = true;
+const trackedDirectionCodes = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'Enter',
+  'ShiftLeft',
+  'ShiftRight',
+]);
+const trackedMouseButtons = new Set([0, 2]);
+const localBindings = {
+  keys: new Set(),
+  mouseButtons: new Set(),
+};
 
 window.addEventListener('gamepadconnected', () => markDirty());
 window.addEventListener('gamepaddisconnected', () => markDirty());
 window.addEventListener('message', handleWindowMessage);
+window.addEventListener('keydown', handleTrackedKeyDown, { capture: true });
+window.addEventListener('keyup', handleTrackedKeyUp, { capture: true });
+window.addEventListener('mousedown', handleTrackedMouseDown, { capture: true });
+window.addEventListener('mouseup', handleTrackedMouseUp, { capture: true });
+window.addEventListener('click', handleTrackedMouseClick, { capture: true });
+window.addEventListener('auxclick', handleTrackedAuxClick, { capture: true });
+window.addEventListener('contextmenu', handleTrackedContextMenu, { capture: true });
+window.addEventListener('blur', clearLocalBindings);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearLocalBindings();
+  }
+});
 requestAnimationFrame(frame);
 
 function makeEmptyInput() {
@@ -86,7 +118,7 @@ function markDirty() {
 }
 
 function frame(now) {
-  updateControllerState();
+  updateInputState();
   warmUiAudioFromInput();
   updateResetCombo(now);
   handlePhaseControls(now);
@@ -170,23 +202,41 @@ function playMiniGameHitSound() {
   playUiTone(180, 160, 'sawtooth', 0.026);
 }
 
-function updateControllerState() {
+function updateInputState() {
   const previous = state.input;
   const gamepads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
   const gamepad = gamepads[0];
 
-  if (!gamepad) {
-    if (state.hasController) {
-      state.hasController = false;
-      state.controllerName = '';
-      markDirty();
-    }
+  const next = mergeInputStates(
+    readGamepadInput(gamepad),
+    readLocalBindings(),
+    state.phase === 'playing' ? state.frameInput : null,
+  );
 
-    state.input = makeEmptyInput();
-    return;
+  next.upPressed = next.up && !previous.up;
+  next.downPressed = next.down && !previous.down;
+  next.leftPressed = next.left && !previous.left;
+  next.rightPressed = next.right && !previous.right;
+  next.button1Pressed = next.button1 && !previous.button1;
+  next.button2Pressed = next.button2 && !previous.button2;
+
+  const nextControllerName = gamepad ? gamepad.id || 'Arcade Controller' : '';
+  const controllerChanged = state.hasController !== Boolean(gamepad) || state.controllerName !== nextControllerName;
+  state.input = next;
+  state.hasController = Boolean(gamepad);
+  state.controllerName = nextControllerName;
+
+  if (controllerChanged) {
+    markDirty();
+  }
+}
+
+function readGamepadInput(gamepad) {
+  const next = makeEmptyInput();
+  if (!gamepad) {
+    return next;
   }
 
-  const next = makeEmptyInput();
   const axisX = gamepad.axes?.[0] || 0;
   const axisY = gamepad.axes?.[1] || 0;
 
@@ -196,26 +246,157 @@ function updateControllerState() {
   next.right = axisX > 0.45 || readButton(gamepad, 15);
   next.button1 = readButton(gamepad, 0);
   next.button2 = readButton(gamepad, 1);
-
-  next.upPressed = next.up && !previous.up;
-  next.downPressed = next.down && !previous.down;
-  next.leftPressed = next.left && !previous.left;
-  next.rightPressed = next.right && !previous.right;
-  next.button1Pressed = next.button1 && !previous.button1;
-  next.button2Pressed = next.button2 && !previous.button2;
-
-  const controllerChanged = !state.hasController || state.controllerName !== gamepad.id;
-  state.input = next;
-  state.hasController = true;
-  state.controllerName = gamepad.id || 'Arcade Controller';
-
-  if (controllerChanged) {
-    markDirty();
-  }
+  return next;
 }
 
 function readButton(gamepad, index) {
   return Boolean(gamepad.buttons?.[index]?.pressed);
+}
+
+function readLocalBindings() {
+  const next = makeEmptyInput();
+  next.up = localBindings.keys.has('ArrowUp') || localBindings.keys.has('KeyW');
+  next.down = localBindings.keys.has('ArrowDown') || localBindings.keys.has('KeyS');
+  next.left = localBindings.keys.has('ArrowLeft') || localBindings.keys.has('KeyA');
+  next.right = localBindings.keys.has('ArrowRight') || localBindings.keys.has('KeyD');
+  next.button1 = localBindings.mouseButtons.has(0) || localBindings.keys.has('Enter');
+  next.button2 =
+    localBindings.mouseButtons.has(2) ||
+    localBindings.keys.has('ShiftLeft') ||
+    localBindings.keys.has('ShiftRight');
+  return next;
+}
+
+function mergeInputStates(...sources) {
+  const next = makeEmptyInput();
+
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+
+    next.up ||= Boolean(source.up);
+    next.down ||= Boolean(source.down);
+    next.left ||= Boolean(source.left);
+    next.right ||= Boolean(source.right);
+    next.button1 ||= Boolean(source.button1);
+    next.button2 ||= Boolean(source.button2);
+  }
+
+  return next;
+}
+
+function handleTrackedKeyDown(event) {
+  if (!shouldTrackDirectionKey(event)) {
+    return;
+  }
+
+  event.preventDefault();
+  setTrackedKey(event.code, true);
+}
+
+function handleTrackedKeyUp(event) {
+  if (!trackedDirectionCodes.has(event.code)) {
+    return;
+  }
+
+  event.preventDefault();
+  setTrackedKey(event.code, false);
+}
+
+function handleTrackedMouseDown(event) {
+  if (!trackedMouseButtons.has(event.button)) {
+    return;
+  }
+
+  event.preventDefault();
+  setTrackedMouseButton(event.button, true);
+}
+
+function handleTrackedMouseUp(event) {
+  if (!trackedMouseButtons.has(event.button)) {
+    return;
+  }
+
+  event.preventDefault();
+  setTrackedMouseButton(event.button, false);
+}
+
+function handleTrackedMouseClick(event) {
+  if (event.button === 0) {
+    event.preventDefault();
+  }
+}
+
+function handleTrackedAuxClick(event) {
+  if (trackedMouseButtons.has(event.button)) {
+    event.preventDefault();
+  }
+}
+
+function handleTrackedContextMenu(event) {
+  event.preventDefault();
+}
+
+function shouldTrackDirectionKey(event) {
+  if (event.ctrlKey || event.altKey || event.metaKey) {
+    return false;
+  }
+
+  if (!trackedDirectionCodes.has(event.code)) {
+    return false;
+  }
+
+  return !isEditableTarget(event.target);
+}
+
+function isEditableTarget(target) {
+  return Boolean(
+    target instanceof HTMLElement &&
+      (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)),
+  );
+}
+
+function setTrackedKey(code, isDown) {
+  if (isDown) {
+    if (localBindings.keys.has(code)) {
+      return;
+    }
+
+    localBindings.keys.add(code);
+    return;
+  }
+
+  localBindings.keys.delete(code);
+}
+
+function setTrackedMouseButton(button, isDown) {
+  if (isDown) {
+    if (localBindings.mouseButtons.has(button)) {
+      return;
+    }
+
+    localBindings.mouseButtons.add(button);
+    return;
+  }
+
+  localBindings.mouseButtons.delete(button);
+}
+
+function clearLocalBindings() {
+  localBindings.keys.clear();
+  localBindings.mouseButtons.clear();
+}
+
+function sanitizeFrameInput(source) {
+  const next = makeEmptyInput();
+  next.up = Boolean(source?.up);
+  next.down = Boolean(source?.down);
+  next.left = Boolean(source?.left);
+  next.right = Boolean(source?.right);
+  next.button1 = Boolean(source?.button1);
+  next.button2 = Boolean(source?.button2);
+  return next;
 }
 
 function updateResetCombo(now) {
@@ -683,6 +864,7 @@ function clearGameState() {
   state.gameJobId = '';
   state.gameResult = null;
   state.mountedGameHtml = '';
+  state.frameInput = makeEmptyInput();
   state.lastGameRequestPayload = null;
   state.gameRecoveryCount = 0;
   state.repairingGame = false;
@@ -759,6 +941,11 @@ function mountGameIfNeeded() {
 function handleWindowMessage(event) {
   const data = event.data;
   if (!data || typeof data !== 'object') {
+    return;
+  }
+
+  if (data.type === 'arcade-frame-input') {
+    state.frameInput = state.phase === 'playing' ? sanitizeFrameInput(data.state) : makeEmptyInput();
     return;
   }
 
