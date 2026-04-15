@@ -3,6 +3,27 @@ const assetRoot = normalizeBasePath(window.AI_ARCADE_ASSET_ROOT || './');
 const staticLibraryRoot = normalizeBasePath(window.AI_ARCADE_STATIC_LIBRARY_ROOT || './data/library/');
 const CLIENT_HOST_BRIDGE_START = '<!-- AI_ARCADE_HOST_BRIDGE_START -->';
 const CLIENT_HOST_BRIDGE_END = '<!-- AI_ARCADE_HOST_BRIDGE_END -->';
+const HOME_VIDEO_SHADER_SIZE = 256;
+const HOME_VIDEO_SHADER_SETTINGS = {
+  colorNum: 6,
+  pixelSize: 3,
+  maskIntensity: 0.72,
+  blending: true,
+};
+const BAYER_MATRIX_8X8 = [
+  0 / 64, 48 / 64, 12 / 64, 60 / 64, 3 / 64, 51 / 64, 15 / 64, 63 / 64,
+  32 / 64, 16 / 64, 44 / 64, 28 / 64, 35 / 64, 19 / 64, 47 / 64, 31 / 64,
+  8 / 64, 56 / 64, 4 / 64, 52 / 64, 11 / 64, 59 / 64, 7 / 64, 55 / 64,
+  40 / 64, 24 / 64, 36 / 64, 20 / 64, 43 / 64, 27 / 64, 39 / 64, 23 / 64,
+  2 / 64, 50 / 64, 14 / 64, 62 / 64, 1 / 64, 49 / 64, 13 / 64, 61 / 64,
+  34 / 64, 18 / 64, 46 / 64, 30 / 64, 33 / 64, 17 / 64, 45 / 64, 29 / 64,
+  10 / 64, 58 / 64, 6 / 64, 54 / 64, 9 / 64, 57 / 64, 5 / 64, 53 / 64,
+  42 / 64, 26 / 64, 38 / 64, 22 / 64, 41 / 64, 25 / 64, 37 / 64, 21 / 64,
+];
+const homeVideoSourceCanvas = document.createElement('canvas');
+homeVideoSourceCanvas.width = HOME_VIDEO_SHADER_SIZE;
+homeVideoSourceCanvas.height = HOME_VIDEO_SHADER_SIZE;
+const homeVideoSourceContext = homeVideoSourceCanvas.getContext('2d', { willReadFrequently: true });
 
 const loadingSets = {
   questions: [
@@ -184,6 +205,7 @@ function frame(now) {
   maybeScheduleThumbnailCapture();
   updateLoadingMiniGame();
   flushRender();
+  drawHomeVideoShader();
   updateLiveResetMeter();
   pushInputToGame();
   drawLoadingMiniGame();
@@ -1975,6 +1997,12 @@ function renderHome() {
     <div class="content home-layout">
       <section class="panel home-hero">
         <div class="home-video-frame">
+          <canvas
+            class="home-video-canvas"
+            width="${HOME_VIDEO_SHADER_SIZE}"
+            height="${HOME_VIDEO_SHADER_SIZE}"
+            aria-hidden="true"
+          ></canvas>
           <video
             class="home-video"
             src="${escapeHtml(assetUrl('media/home-preview.mp4'))}"
@@ -2004,6 +2032,116 @@ function renderHome() {
       </aside>
     </div>
   `;
+}
+
+function drawHomeVideoShader() {
+  const outputCanvas = document.querySelector('.home-video-canvas');
+  const video = document.querySelector('.home-video');
+  if (!outputCanvas || !video || !homeVideoSourceContext) {
+    return;
+  }
+
+  const outputContext = outputCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+  if (!outputContext) {
+    return;
+  }
+
+  outputContext.imageSmoothingEnabled = false;
+  outputContext.fillStyle = '#060b17';
+  outputContext.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+
+  if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+    return;
+  }
+
+  homeVideoSourceContext.imageSmoothingEnabled = false;
+  homeVideoSourceContext.fillStyle = '#060b17';
+  homeVideoSourceContext.fillRect(0, 0, HOME_VIDEO_SHADER_SIZE, HOME_VIDEO_SHADER_SIZE);
+
+  const sourceAspect = video.videoWidth / video.videoHeight;
+  const targetAspect = 1;
+  let sx = 0;
+  let sy = 0;
+  let sw = video.videoWidth;
+  let sh = video.videoHeight;
+
+  if (sourceAspect > targetAspect) {
+    sw = Math.round(video.videoHeight * targetAspect);
+    sx = Math.round((video.videoWidth - sw) / 2);
+  } else if (sourceAspect < targetAspect) {
+    sh = Math.round(video.videoWidth / targetAspect);
+    sy = Math.round((video.videoHeight - sh) / 2);
+  }
+
+  homeVideoSourceContext.drawImage(
+    video,
+    sx,
+    sy,
+    sw,
+    sh,
+    0,
+    0,
+    HOME_VIDEO_SHADER_SIZE,
+    HOME_VIDEO_SHADER_SIZE,
+  );
+
+  const frame = homeVideoSourceContext.getImageData(0, 0, HOME_VIDEO_SHADER_SIZE, HOME_VIDEO_SHADER_SIZE);
+  const data = frame.data;
+  const colorNum = HOME_VIDEO_SHADER_SETTINGS.colorNum;
+  const colorSteps = Math.max(1, colorNum - 1);
+  const pixelSize = Math.max(1, HOME_VIDEO_SHADER_SETTINGS.pixelSize);
+  const maskIntensity = HOME_VIDEO_SHADER_SETTINGS.maskIntensity;
+  const blending = HOME_VIDEO_SHADER_SETTINGS.blending;
+
+  for (let y = 0; y < HOME_VIDEO_SHADER_SIZE; y += 1) {
+    for (let x = 0; x < HOME_VIDEO_SHADER_SIZE; x += 1) {
+      const index = (y * HOME_VIDEO_SHADER_SIZE + x) * 4;
+      const bayerThreshold = BAYER_MATRIX_8X8[(y % 8) * 8 + (x % 8)];
+      let red = data[index] / 255;
+      let green = data[index + 1] / 255;
+      let blue = data[index + 2] / 255;
+
+      red = Math.floor((red + bayerThreshold * 0.6) * colorSteps + 0.5) / colorSteps;
+      green = Math.floor((green + bayerThreshold * 0.6) * colorSteps + 0.5) / colorSteps;
+      blue = Math.floor((blue + bayerThreshold * 0.6) * colorSteps + 0.5) / colorSteps;
+
+      const coordX = x / pixelSize;
+      const coordY = y / pixelSize;
+      const cellOffsetY = ((Math.floor(coordX) % 3) * 0.5);
+      const subcoordX = coordX * 3;
+      const ind = Math.floor(subcoordX) % 3;
+
+      let maskRed = ind === 0 ? 2 : 0;
+      let maskGreen = ind === 1 ? 2 : 0;
+      let maskBlue = ind === 2 ? 2 : 0;
+
+      const cellUvX = ((fract(subcoordX) * 2) - 1);
+      const cellUvY = ((fract(coordY + cellOffsetY) * 2) - 1);
+      const borderX = 1 - cellUvX * cellUvX * 0.9;
+      const borderY = 1 - cellUvY * cellUvY * 0.9;
+      const borderMask = Math.max(0, borderX * borderY);
+
+      maskRed *= borderMask;
+      maskGreen *= borderMask;
+      maskBlue *= borderMask;
+
+      if (blending) {
+        red *= 1 + (maskRed - 1) * maskIntensity;
+        green *= 1 + (maskGreen - 1) * maskIntensity;
+        blue *= 1 + (maskBlue - 1) * maskIntensity;
+      } else {
+        red *= maskRed;
+        green *= maskGreen;
+        blue *= maskBlue;
+      }
+
+      data[index] = Math.round(clamp01(red) * 255);
+      data[index + 1] = Math.round(clamp01(green) * 255);
+      data[index + 2] = Math.round(clamp01(blue) * 255);
+    }
+  }
+
+  outputContext.putImageData(frame, 0, 0);
 }
 
 function renderLibrary() {
@@ -2292,6 +2430,14 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function fract(value) {
+  return value - Math.floor(value);
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
 }
 
 async function fetchJson(url, options = {}) {
