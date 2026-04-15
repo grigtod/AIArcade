@@ -2,14 +2,17 @@
 
 # AI Arcade
 
-Local Raspberry Pi web app that:
+Local web app that:
 
 - asks OpenAI for a fresh set of 4 two-answer questions on startup
-- lets the player answer with the arcade controls, with keyboard and mouse fallbacks available too
+- is designed for a joystick controller with two buttons, while also supporting keyboard fallback controls
 - asks OpenAI for a brand-new arcade game based on those answers
 - loads the returned single-file game directly in the browser
 - can also run as a static GitHub Pages site for replaying saved games from the library
-- supports a global reset combo: hold `UP + Button 1 + Button 2` for 4 seconds
+
+Try it without AI game generation on GitHub Pages: [AI Arcade Box demo](https://grigtod.github.io/AIArcadeBox/)
+
+This browser demo is for playing saved games only and does not include the AI game generation flow.
 
 ## Stack
 
@@ -40,9 +43,10 @@ npm start
 
 5. Open `http://localhost:3000`.
 
-## Raspberry Pi notes
+## Controls
 
-- The browser UI is designed around the arcade controller, but arrow keys or `WASD` also map to directions, `Enter` maps to Button 1, `Shift` maps to Button 2, `Esc` returns to the start menu, and mouse buttons `1` and `2` also map to Button 1 and Button 2.
+- The browser UI is designed around a joystick controller with two buttons.
+- Keyboard fallback is also supported: arrow keys or `WASD` move, `Enter` maps to Button 1, `Shift` maps to Button 2, `Esc` returns to the start menu, and mouse buttons `1` and `2` also map to Button 1 and Button 2.
 - The frontend reads the controller through the browser Gamepad API and mirrors the same digital inputs to keyboard and mouse fallback bindings.
 - By default, Button 1 is gamepad button index `0` and Button 2 is index `1`.
 - The joystick uses either the left stick axes or standard d-pad button mapping if the controller exposes buttons `12-15`.
@@ -60,10 +64,6 @@ If you run the app, generate a really cool game, and want to share it back, feel
 
 All help to expand the app further is welcome, whether that is new saved games, polish, fixes, or bigger feature ideas.
 
-## Verification
+## License
 
-Without a live API key, you can still check the server syntax:
-
-```bash
-npm run check
-```
+This project is released under the MIT License. See [LICENSE](./LICENSE) for the full text.
